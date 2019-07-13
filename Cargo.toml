@@ -1,0 +1,10 @@
+[package]
+name = "mafia"
+version = "0.1.0"
+authors = ["Sergei Fomin <sergio-dna@yandex.ru>"]
+edition = "2018"
+
+[dependencies]
+runtime = "0.3.0-alpha.6"
+futures-preview = { version = "=0.3.0-alpha.16", features = ["async-await", "nightly"] }
+chrono = "0.4"
