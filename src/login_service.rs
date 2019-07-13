@@ -6,7 +6,10 @@ use futures::{
     channel::mpsc::{UnboundedSender, UnboundedReceiver, unbounded}
 };
 
-use std::collections::HashMap;
+use std::{
+    sync::Arc,
+    collections::HashMap,
+};
 
 pub type UserId = SocketId;
 
@@ -171,6 +174,14 @@ impl User {
 
     pub fn send(&self, message: String) {
         self.socket.send(message)
+    }
+
+    pub fn send_boxed(&self, message: Box<str>) {
+        self.socket.send_boxed(message)
+    }
+
+    pub fn send_arc(&self, message: Arc<str>) {
+        self.socket.send_arc(message)
     }
 
     pub fn send_static(&self, message: &'static str) {

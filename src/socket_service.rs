@@ -12,6 +12,7 @@ use runtime::net::{TcpListener, TcpStream};
 
 use std::{
     io,
+    sync::Arc,
     net::{IpAddr, SocketAddr},
     collections::HashMap,
 };
@@ -48,7 +49,8 @@ enum SocketRequest {
 
 enum SocketMessage {
     Static(&'static str),
-    Dynamic(String),
+    Boxed(Box<str>),
+    Arc(Arc<str>),
 }
 
 struct SocketReader {
@@ -161,8 +163,9 @@ impl SocketService {
             SocketRequest::SendMessage(id, message) => {
                 if let Some(writer) = self.socket_writer.get_mut(&id) {
                     let data = match &message {
-                        SocketMessage::Dynamic(string) => string.as_bytes(),
                         SocketMessage::Static(string) => string.as_bytes(),
+                        SocketMessage::Boxed(string) => string.as_bytes(),
+                        SocketMessage::Arc(string) => string.as_bytes(),
                     };
                     if let Err(err) = writer.write_all(&data).await {
                         eprintln!("Closing connection to {}: write error {}", id, err);
@@ -243,24 +246,35 @@ impl SocketReader {
 }
 
 impl SocketProxy {
+    const ERROR: &'static str = "SocketProxy channel error";
+
     pub fn get_id(&self) -> SocketId {
         self.id
     }
 
     pub fn send(&self, message: String) {
+        self.send_boxed(message.into_boxed_str());
+    }
+
+    pub fn send_boxed(&self, message: Box<str>) {
         self.channel.unbounded_send(SocketRequest::SendMessage(self.id,
-                                                               SocketMessage::Dynamic(message)))
-            .expect("SocketProxy channel error in send()");
+                                                               SocketMessage::Boxed(message)))
+            .expect(Self::ERROR);
+    }
+
+    pub fn send_arc(&self, message: Arc<str>) {
+        self.channel.unbounded_send(SocketRequest::SendMessage(self.id,
+                                                               SocketMessage::Arc(message)))
+            .expect(Self::ERROR);
     }
 
     pub fn send_static(&self, message: &'static str) {
         self.channel.unbounded_send(SocketRequest::SendMessage(self.id,
                                                                SocketMessage::Static(message)))
-            .expect("SocketProxy channel error in send()");
+            .expect(Self::ERROR);
     }
 
     pub fn close(&self) {
-        self.channel.unbounded_send(SocketRequest::CloseSocket(self.id))
-            .expect("SocketProxy channel error in close()");
+        self.channel.unbounded_send(SocketRequest::CloseSocket(self.id)).expect(Self::ERROR);
     }
 }

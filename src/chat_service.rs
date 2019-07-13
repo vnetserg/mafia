@@ -1,5 +1,5 @@
 use crate::login_service::{User, UserId, UserEvent};
-use crate::locale::Locale;
+use crate::locale::{Locale, HELP_EN};
 
 use futures::{
     prelude::*,
@@ -8,7 +8,17 @@ use futures::{
 
 use chrono::prelude::*;
 
-use std::collections::HashMap;
+use std::{
+    sync::Arc,
+    collections::HashMap,
+};
+
+type PlayerId = UserId;
+
+pub struct Player {
+    id: PlayerId,
+    user: User,
+}
 
 pub struct ChatService {
     user_sender: UnboundedSender<UserEvent>,
@@ -18,10 +28,21 @@ pub struct ChatService {
     locale: Locale,
 }
 
+pub enum GameEvent {
+    NewPlayer(Player),
+    DropPlayer(PlayerId),
+    Action(PlayerId, PlayerId),
+    CommandObserve(PlayerId),
+    CommandPlay(PlayerId),
+    CommandPause(PlayerId),
+    CommandStart(PlayerId),
+}
+
 enum Message<'a> {
     Public(&'a str),
     Private(&'a str, Vec<&'a str>),
-    Command(&'a str, Vec<&'a str>),
+    Command(&'a str),
+    Action(&'a str),
 }
 
 impl ChatService {
@@ -53,9 +74,9 @@ impl ChatService {
 
     fn handle_new_user(&mut self, user: User) {
         let id = user.get_id();
-        self.broadcast(&format!("{} Connected: {}\n",
-                       Local::now().format("%H:%M"),
-                       user.get_login()));
+        self.broadcast(format!("{} Connected: {}\n",
+                               Local::now().format("%H:%M"),
+                               user.get_login()).into());
         self.login_id.insert(user.get_login().to_owned(), id);
         self.users.insert(id, user);
     }
@@ -69,17 +90,17 @@ impl ChatService {
             Message::Public(message) => self.handle_public_message(user, message),
             Message::Private(message, mut recipients) =>
                 self.handle_private_message(user, message, &mut recipients),
-            Message::Command(command, args) => self.handle_command(user, command, &args),
+            Message::Command(command) => self.handle_command(user, command),
+            Message::Action(login) => self.handle_action(user, login),
         }
     }
 
     fn handle_public_message(&self, user: &User, message: &str) {
         if !message.is_empty() {
-            let message = format!("{} [{}] {}\n",
-                                  Local::now().format("%H:%M"),
-                                  user.get_login(),
-                                  message);
-            self.broadcast(&message);
+            self.broadcast(format!("{} [{}] {}\n",
+                                   Local::now().format("%H:%M"),
+                                   user.get_login(),
+                                   message).into());
         }
     }
 
@@ -105,32 +126,60 @@ impl ChatService {
             return;
         }
         // Build message
-        let message = format!("{} [{}]->[{}] {}\n",
-                              Local::now().format("%H:%M"),
-                              user.get_login(),
-                              recipients.join("]+["),
-                              message);
-        // Send message
+        let message: Arc<str> = format!("{} [{}]->[{}] {}\n",
+                                        Local::now().format("%H:%M"),
+                                        user.get_login(),
+                                        recipients.join("]+["),
+                                        message).into();
+        // Delete duplicates and sender from recepients
         recipients.sort();
         let (recipients, _) = recipients.partition_dedup();
+        // Send message
         for &login in recipients.iter() {
             if login != user.get_login() {
                 let other_user = self.get_user_by_login(login).expect("ChatService user is missing");
-                other_user.send(message.clone());
+                other_user.send_arc(message.clone());
             }
         }
-        user.send(message);
+        user.send_arc(message);
     }
 
-    fn handle_command(&self, user: &User, command: &str, args: &[&str]) {
+    fn handle_command(&self, user: &User, command: &str) {
+        let mut game_event = None;
+        match command {
+            "help" => user.send_static(HELP_EN),
+            "quit" => user.drop(),
+            "list" => {
+                let users: Vec<&str> = self.login_id.keys().map(|s| s.as_str()).collect();
+                user.send(format!("Players online:\n * {}\n", users.join("\n * ")));
+            },
+            "observe" => game_event = Some(GameEvent::CommandObserve(user.get_id())),
+            "play" => game_event = Some(GameEvent::CommandPlay(user.get_id())),
+            "pause" => game_event = Some(GameEvent::CommandPause(user.get_id())),
+            "start" => game_event = Some(GameEvent::CommandStart(user.get_id())),
+            _ => user.send_static("Unknown command.\n"),
+        }
+        if let Some(event) = game_event {
+            // TODO
+        }
+    }
 
+    fn handle_action(&self, user: &User, other: &str) {
+        let other = match self.login_id.get(other) {
+            Some(other) => other,
+            None => {
+                user.send(format!("Player \"{}\" not found.\n", other));
+                return;
+            }
+        };
+        // TODO
     }
 
     fn handle_drop_user(&mut self, id: UserId) {
         if let Some(user) = self.users.remove(&id) {
-            self.broadcast(&format!("{} Disconnected: {}\n",
-                                    Local::now().format("%H:%M"),
-                                    user.get_login()));
+            self.broadcast(format!("{} Disconnected: {}\n",
+                                   Local::now().format("%H:%M"),
+                                   user.get_login()).into());
         }
     }
 
@@ -138,9 +187,9 @@ impl ChatService {
         self.users.get(self.login_id.get(login)?)
     }
 
-    fn broadcast(&self, message: &str) {
+    fn broadcast(&self, message: Arc<str>) {
         for user in self.users.values() {
-            user.send(message.to_owned());
+            user.send_arc(message.clone());
         }
     }
 }
@@ -168,7 +217,12 @@ impl<'a> Message<'a> {
     }
 
     fn parse_command(line: &'a str) -> Self {
-        Message::Command(line, vec![])
+        let line = Message::remove_first_char(line);
+        if let Some('!') = line.chars().next() {
+            Message::Action(Message::remove_first_char(line))
+        } else {
+            Message::Command(line)
+        }
     }
 
     fn remove_first_char(slice: &str) -> &str {
