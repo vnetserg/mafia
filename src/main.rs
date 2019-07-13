@@ -1,5 +1,6 @@
 #![feature(async_await)]
 #![feature(async_closure)]
+#![feature(slice_partition_dedup)]
 #![recursion_limit="128"]
 
 mod chat_service;

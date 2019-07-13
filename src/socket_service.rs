@@ -55,7 +55,8 @@ struct SocketReader {
     id: SocketId,
     reader: ReadHalf<TcpStream>,
     flatline: Fuse<FlatlineFuture>,
-    sender: UnboundedSender<ReadResult>
+    sender: UnboundedSender<ReadResult>,
+    keep_running: bool,
 }
 
 enum ReadResult {
@@ -189,13 +190,13 @@ impl SocketReader {
         sender: UnboundedSender<ReadResult>
     ) {
         let flatline = flatline.fuse();
-        let socket_reader = SocketReader{id, reader, flatline, sender};
+        let socket_reader = SocketReader{id, reader, flatline, sender, keep_running: true};
         socket_reader.read_forever().await
     }
 
     async fn read_forever(mut self) {
         let mut buffer: [u8; 1024] = [0; 1024];
-        loop {
+        while self.keep_running {
             select! {
                 result = self.reader.read(&mut buffer).fuse() => {
                     match result {
@@ -212,9 +213,11 @@ impl SocketReader {
         }
     }
 
-    fn handle_data(&self, data: &[u8]) {
+    fn handle_data(&mut self, data: &[u8]) {
         if data.is_empty() {
-            self.sender.unbounded_send(ReadResult::Closed(self.id)).expect(Self::ERROR);
+            self.sender.unbounded_send(ReadResult::Closed(self.id))
+                .expect(Self::ERROR);
+            self.keep_running = false;
             return;
         }
 
@@ -223,12 +226,13 @@ impl SocketReader {
             if data[i] == b'\n' {
                 match std::str::from_utf8(&data[start..i]) {
                     Ok(line) => {
-                        self.sender.unbounded_send(ReadResult::Ok(self.id, line.to_owned()))
+                        self.sender.unbounded_send(ReadResult::Ok(self.id, line.trim().to_owned()))
                             .expect(Self::ERROR);
                     },
                     Err(err) => {
                         self.sender.unbounded_send(ReadResult::Utf8Error(self.id, err))
                             .expect(Self::ERROR);
+                        self.keep_running = false;
                         return;
                     }
                 }
@@ -243,19 +247,19 @@ impl SocketProxy {
         self.id
     }
 
-    pub fn send(&mut self, message: String) {
+    pub fn send(&self, message: String) {
         self.channel.unbounded_send(SocketRequest::SendMessage(self.id,
                                                                SocketMessage::Dynamic(message)))
             .expect("SocketProxy channel error in send()");
     }
 
-    pub fn send_static(&mut self, message: &'static str) {
+    pub fn send_static(&self, message: &'static str) {
         self.channel.unbounded_send(SocketRequest::SendMessage(self.id,
                                                                SocketMessage::Static(message)))
             .expect("SocketProxy channel error in send()");
     }
 
-    pub fn close(&mut self) {
+    pub fn close(&self) {
         self.channel.unbounded_send(SocketRequest::CloseSocket(self.id))
             .expect("SocketProxy channel error in close()");
     }

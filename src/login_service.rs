@@ -71,7 +71,7 @@ impl LoginService {
         }
     }
 
-    fn handle_new_socket(&mut self, mut proxy: SocketProxy) {
+    fn handle_new_socket(&mut self, proxy: SocketProxy) {
         proxy.send_static("Welcome to the Mafia server!\nPlease enter your nickname: ");
         self.auth_state.insert(proxy.get_id(), AuthState::Initial(proxy));
     }
@@ -79,7 +79,7 @@ impl LoginService {
     fn handle_new_message(&mut self, id: SocketId, data: String) {
         let state = self.auth_state.remove(&id);
         let new_state = match state {
-            Some(AuthState::Initial(mut proxy)) => {
+            Some(AuthState::Initial(proxy)) => {
                 let login = data;
                 match self.login_state.get(&login) {
                     Some(LoginState::Online(_)) => {
@@ -97,7 +97,7 @@ impl LoginService {
                     }
                 }
             },
-            Some(AuthState::GotLogin(mut proxy, login)) => {
+            Some(AuthState::GotLogin(proxy, login)) => {
                 let password = data;
                 let login_state = self.login_state.remove(&login);
                 let (new_login_state, new_auth_state) = match login_state {
@@ -169,15 +169,15 @@ impl User {
         &self.login
     }
 
-    pub fn send(&mut self, message: String) {
+    pub fn send(&self, message: String) {
         self.socket.send(message)
     }
 
-    pub fn send_static(&mut self, message: &'static str) {
+    pub fn send_static(&self, message: &'static str) {
         self.socket.send_static(message)
     }
 
-    pub fn drop(&mut self) {
+    pub fn drop(&self) {
         self.socket.close()
     }
 }
