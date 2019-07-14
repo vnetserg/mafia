@@ -84,7 +84,7 @@ impl SocketService {
         }
     }
 
-    pub async fn run(&mut self) -> std::io::Result<()> {
+    pub async fn run(mut self) -> std::io::Result<()> {
         let mut listener = TcpListener::bind((self.address, self.port))?;
         println!("Listening on {}", listener.local_addr()?);
 

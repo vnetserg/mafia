@@ -63,7 +63,7 @@ impl LoginService {
         self.socket_sender.clone()
     }
 
-    pub async fn run(&mut self) {
+    pub async fn run(mut self) {
         loop {
             match self.socket_receiver.next().await {
                 Some(SocketEvent::NewSocket(proxy)) => self.handle_new_socket(proxy),

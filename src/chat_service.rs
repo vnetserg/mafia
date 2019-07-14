@@ -86,7 +86,7 @@ impl ChatService {
         self.user_sender.clone()
     }
 
-    pub async fn run(&mut self) {
+    pub async fn run(mut self) {
         loop {
             select! {
                 user_event = self.user_receiver.next().fuse() =>
@@ -118,7 +118,7 @@ impl ChatService {
         self.login_id.insert(user.get_login().into(), id);
         let info = UserInfo{
             user,
-            mute: MuteLevel::DenyAll("You are observer, you can not use chat.\n"),
+            mute: MuteLevel::DenyAll("Observers are not allowed to use chat.\n"),
         };
         self.users.insert(id, info);
     }

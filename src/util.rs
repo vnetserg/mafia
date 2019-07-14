@@ -1,13 +1,19 @@
 use futures::{
-    Future,
-    FutureExt,
-    task::Context,
-    Poll,
+    prelude::*,
+    task::{Context, Poll},
     channel::oneshot,
+    channel::mpsc::{unbounded, UnboundedSender, UnboundedReceiver},
 };
 
-use std::ops::{Deref, DerefMut};
-use std::pin::Pin;
+use runtime::time::Delay;
+
+use std::{
+    ops::{Deref, DerefMut},
+    pin::Pin,
+    time::Duration
+};
+
+///////////////////////////////////////////////////////////////////////////////////////
 
 pub struct Monitored<T>(T, oneshot::Sender<()>);
 pub struct FlatlineFuture(oneshot::Receiver<()>);
@@ -39,5 +45,44 @@ impl Future for FlatlineFuture {
             Poll::Pending => Poll::Pending,
             Poll::Ready(_) => Poll::Ready(()),
         }
+    }
+}
+
+///////////////////////////////////////////////////////////////////////////////////////
+
+pub struct Timer<T> {
+    sender: UnboundedSender<T>,
+    receiver: UnboundedReceiver<T>,
+}
+
+impl<T: Send + 'static> Timer<T> {
+    pub fn new() -> Self {
+        let (sender, receiver) = unbounded();
+        Timer{sender, receiver}
+    }
+
+    pub fn add_alarm(&self, delay_ms: u64, memo: T) {
+        let sender = self.sender.clone();
+        #[allow(unused)] {
+            runtime::spawn(async move {
+                let delay = Delay::new(Duration::from_millis(delay_ms));
+                delay.await;
+                sender.unbounded_send(memo).expect("Timer channel failed");
+            });
+        }
+    }
+
+    pub fn reset(&mut self) {
+        let (sender, receiver) = unbounded();
+        self.sender = sender;
+        self.receiver = receiver;
+    }
+}
+
+impl<T> Stream for Timer<T> {
+    type Item = T;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
+        self.receiver.poll_next_unpin(cx)
     }
 }

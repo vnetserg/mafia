@@ -46,10 +46,10 @@ impl Args {
 #[runtime::main]
 async fn main() -> std::io::Result<()> {
     let args = Args::parse();
-    let mut game_service = GameService::new(args.locale);
-    let mut chat_service = ChatService::new(game_service.make_event_handler(), args.locale);
-    let mut login_service = LoginService::new(chat_service.make_user_handler(), args.locale);
-    let mut socket_service = SocketService::new(login_service.make_socket_handler(),
+    let game_service = GameService::new(args.locale);
+    let chat_service = ChatService::new(game_service.make_event_handler(), args.locale);
+    let login_service = LoginService::new(chat_service.make_user_handler(), args.locale);
+    let socket_service = SocketService::new(login_service.make_socket_handler(),
                                                 args.address, args.port);
 
     let mut socket_task = runtime::spawn(async move {
