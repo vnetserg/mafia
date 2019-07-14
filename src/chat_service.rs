@@ -13,14 +13,16 @@ use std::{
     collections::HashMap,
 };
 
-type PlayerId = UserId;
+pub type PlayerId = UserId;
 
+#[derive(Clone)]
 pub struct Player {
     id: PlayerId,
     user: User,
 }
 
 pub struct ChatService {
+    event_handler: UnboundedSender<GameEvent>,
     user_sender: UnboundedSender<UserEvent>,
     user_receiver: UnboundedReceiver<UserEvent>,
     users: HashMap<UserId, User>,
@@ -31,7 +33,7 @@ pub struct ChatService {
 pub enum GameEvent {
     NewPlayer(Player),
     DropPlayer(PlayerId),
-    Action(PlayerId, PlayerId),
+    Action(PlayerId, Box<str>),
     CommandObserve(PlayerId),
     CommandPlay(PlayerId),
     CommandPause(PlayerId),
@@ -46,9 +48,10 @@ enum Message<'a> {
 }
 
 impl ChatService {
-    pub fn new(locale: Locale) -> Self {
+    pub fn new(event_handler: UnboundedSender<GameEvent>, locale: Locale) -> Self {
         let (user_sender, user_receiver) = unbounded();
         ChatService {
+            event_handler,
             user_sender,
             user_receiver,
             locale,
@@ -165,13 +168,6 @@ impl ChatService {
     }
 
     fn handle_action(&self, user: &User, other: &str) {
-        let other = match self.login_id.get(other) {
-            Some(other) => other,
-            None => {
-                user.send(format!("Player \"{}\" not found.\n", other));
-                return;
-            }
-        };
         // TODO
     }
 

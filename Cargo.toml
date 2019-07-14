@@ -8,3 +8,4 @@ edition = "2018"
 runtime = "0.3.0-alpha.6"
 futures-preview = { version = "=0.3.0-alpha.16", features = ["async-await", "nightly"] }
 chrono = "0.4"
+ctrlc = "3.1.3"
