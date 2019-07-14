@@ -50,20 +50,12 @@ async fn main() -> std::io::Result<()> {
     let chat_service = ChatService::new(game_service.make_event_handler(), args.locale);
     let login_service = LoginService::new(chat_service.make_user_handler(), args.locale);
     let socket_service = SocketService::new(login_service.make_socket_handler(),
-                                                args.address, args.port);
+                                            args.address, args.port);
 
-    let mut socket_task = runtime::spawn(async move {
-        socket_service.run().await
-    }).fuse();
-    let mut login_task = runtime::spawn(async move {
-        login_service.run().await
-    }).fuse();
-    let mut chat_task = runtime::spawn(async move {
-        chat_service.run().await
-    }).fuse();
-    let mut game_task = runtime::spawn(async move {
-        game_service.run().await
-    }).fuse();
+    let mut socket_task = runtime::spawn(socket_service.run()).fuse();
+    let mut login_task = runtime::spawn(login_service.run()).fuse();
+    let mut chat_task = runtime::spawn(chat_service.run()).fuse();
+    let mut game_task = runtime::spawn(game_service.run()).fuse();
 
     let (ctrlc_sender, mut ctrlc_receiver) = unbounded();
     ctrlc::set_handler(move || {
