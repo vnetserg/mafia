@@ -16,13 +16,13 @@ pub type UserId = SocketId;
 #[derive(Clone)]
 pub struct User {
     id: UserId,
-    login: String,
+    login: Box<str>,
     socket: SocketProxy,
 }
 
 pub enum UserEvent {
     NewUser(User),
-    NewMessage(UserId, String),
+    NewMessage(UserId, Box<str>),
     DropUser(UserId),
 }
 
@@ -31,19 +31,19 @@ pub struct LoginService {
     socket_sender: UnboundedSender<SocketEvent>,
     socket_receiver: UnboundedReceiver<SocketEvent>,
     auth_state: HashMap<SocketId, AuthState>,
-    login_state: HashMap<String, LoginState>,
+    login_state: HashMap<Box<str>, LoginState>,
     locale: Locale,
 }
 
 enum AuthState {
     Initial(SocketProxy),
-    GotLogin(SocketProxy, String),
+    GotLogin(SocketProxy, Box<str>),
     Ok(User),
 }
 
 enum LoginState {
-    Online(String),
-    Offline(String),
+    Online(Box<str>),
+    Offline(Box<str>),
 }
 
 impl LoginService {
@@ -79,7 +79,7 @@ impl LoginService {
         self.auth_state.insert(proxy.get_id(), AuthState::Initial(proxy));
     }
 
-    fn handle_new_message(&mut self, id: SocketId, data: String) {
+    fn handle_new_message(&mut self, id: SocketId, data: Box<str>) {
         let state = self.auth_state.remove(&id);
         let new_state = match state {
             Some(AuthState::Initial(proxy)) => {
@@ -110,7 +110,7 @@ impl LoginService {
                         (LoginState::Online(password), AuthState::Initial(proxy))
                     },
                     Some(LoginState::Offline(real_password)) => {
-                        if password == *real_password {
+                        if password == real_password {
                             proxy.send(format!("Welcome back, {}!\n", login));
                             let user = User {
                                 id: proxy.get_id(),

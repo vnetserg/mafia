@@ -27,7 +27,7 @@ pub struct SocketProxy {
 
 pub enum SocketEvent {
     NewSocket(SocketProxy),
-    NewMessage(SocketId, String),
+    NewMessage(SocketId, Box<str>),
     ClosedSocket(SocketId),
 }
 
@@ -62,7 +62,7 @@ struct SocketReader {
 }
 
 enum ReadResult {
-    Ok(SocketId, String),
+    Ok(SocketId, Box<str>),
     IoError(SocketId, io::Error),
     Utf8Error(SocketId, std::str::Utf8Error),
     Closed(SocketId),
@@ -229,7 +229,7 @@ impl SocketReader {
             if data[i] == b'\n' {
                 match std::str::from_utf8(&data[start..i]) {
                     Ok(line) => {
-                        self.sender.unbounded_send(ReadResult::Ok(self.id, line.trim().to_owned()))
+                        self.sender.unbounded_send(ReadResult::Ok(self.id, line.trim().into()))
                             .expect(Self::ERROR);
                     },
                     Err(err) => {

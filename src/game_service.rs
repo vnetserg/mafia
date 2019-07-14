@@ -1,4 +1,4 @@
-use crate::chat_service::{GameEvent, Player, PlayerId};
+use crate::chat_service::{GameEvent, Player, PlayerId, MuteLevel};
 use crate::locale::Locale;
 
 use futures::{
@@ -29,6 +29,7 @@ impl GameService {
     pub async fn run(&mut self) {
         loop {
             match self.event_receiver.next().await {
+                Some(GameEvent::Connected(player)) => player.mute(MuteLevel::AllowAll),
                 _ => (),
             }
         }

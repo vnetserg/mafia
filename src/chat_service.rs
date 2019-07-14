@@ -3,6 +3,7 @@ use crate::locale::{Locale, HELP_EN};
 
 use futures::{
     prelude::*,
+    select,
     channel::mpsc::{UnboundedSender, UnboundedReceiver, unbounded}
 };
 
@@ -17,32 +18,50 @@ pub type PlayerId = UserId;
 
 #[derive(Clone)]
 pub struct Player {
-    id: PlayerId,
     user: User,
+    channel: UnboundedSender<ChatRequest>,
 }
 
 pub struct ChatService {
     event_handler: UnboundedSender<GameEvent>,
     user_sender: UnboundedSender<UserEvent>,
     user_receiver: UnboundedReceiver<UserEvent>,
-    users: HashMap<UserId, User>,
-    login_id: HashMap<String, UserId>,
+    request_sender: UnboundedSender<ChatRequest>,
+    request_receiver: UnboundedReceiver<ChatRequest>,
+    users: HashMap<UserId, UserInfo>,
+    login_id: HashMap<Box<str>, UserId>,
     locale: Locale,
 }
 
 pub enum GameEvent {
-    NewPlayer(Player),
-    DropPlayer(PlayerId),
+    Connected(Player),
+    Disconnected(PlayerId),
     Action(PlayerId, Box<str>),
+    CommandList(PlayerId),
     CommandObserve(PlayerId),
     CommandPlay(PlayerId),
     CommandPause(PlayerId),
     CommandStart(PlayerId),
 }
 
+struct UserInfo {
+    user: User,
+    mute: MuteLevel,
+}
+
+pub enum MuteLevel {
+    AllowAll,
+    DenyPublic(&'static str),
+    DenyAll(&'static str),
+}
+
+enum ChatRequest {
+    MutePlayer(PlayerId, MuteLevel),
+}
+
 enum Message<'a> {
     Public(&'a str),
-    Private(&'a str, Vec<&'a str>),
+    Private(&'a str, Box<[&'a str]>),
     Command(&'a str),
     Action(&'a str),
 }
@@ -50,10 +69,13 @@ enum Message<'a> {
 impl ChatService {
     pub fn new(event_handler: UnboundedSender<GameEvent>, locale: Locale) -> Self {
         let (user_sender, user_receiver) = unbounded();
+        let (request_sender, request_receiver) = unbounded();
         ChatService {
             event_handler,
             user_sender,
             user_receiver,
+            request_sender,
+            request_receiver,
             locale,
             users: HashMap::new(),
             login_id: HashMap::new(),
@@ -66,39 +88,61 @@ impl ChatService {
 
     pub async fn run(&mut self) {
         loop {
-            match self.user_receiver.next().await {
-                Some(UserEvent::NewUser(user)) => self.handle_new_user(user),
-                Some(UserEvent::NewMessage(id, data)) => self.handle_new_message(id, data),
-                Some(UserEvent::DropUser(id)) => self.handle_drop_user(id),
-                None => panic!("ChatService user_receiver terminated"),
+            select! {
+                user_event = self.user_receiver.next().fuse() =>
+                    match user_event {
+                        Some(UserEvent::NewUser(user)) => self.handle_new_user(user),
+                        Some(UserEvent::NewMessage(id, data)) => self.handle_new_message(id, data),
+                        Some(UserEvent::DropUser(id)) => self.handle_drop_user(id),
+                        None => panic!("ChatService user_receiver terminated"),
+                    },
+                request = self.request_receiver.next().fuse() =>
+                    match request {
+                        Some(ChatRequest::MutePlayer(id, level)) => self.handle_mute_request(id, level),
+                        None => panic!("ChatService request_receiver terminated"),
+                    },
             }
         }
     }
 
     fn handle_new_user(&mut self, user: User) {
-        let id = user.get_id();
         self.broadcast(format!("{} Connected: {}\n",
                                Local::now().format("%H:%M"),
                                user.get_login()).into());
-        self.login_id.insert(user.get_login().to_owned(), id);
-        self.users.insert(id, user);
+        // Send event
+        let player = Player{user: user.clone(), channel: self.request_sender.clone()};
+        let event = GameEvent::Connected(player);
+        self.event_handler.unbounded_send(event).expect("ChanService event_handler failed");
+        // Process new user
+        let id = user.get_id();
+        self.login_id.insert(user.get_login().into(), id);
+        let info = UserInfo{
+            user,
+            mute: MuteLevel::DenyAll("You are observer, you can not use chat.\n"),
+        };
+        self.users.insert(id, info);
     }
 
-    fn handle_new_message(&self, id: UserId, line: String) {
-        let user = match self.users.get(&id) {
-            Some(user) => user,
+    fn handle_new_message(&self, id: UserId, line: Box<str>) {
+        let info = match self.users.get(&id) {
+            Some(info) => info,
             None => return,
         };
         match Message::parse(&line) {
-            Message::Public(message) => self.handle_public_message(user, message),
+            Message::Public(message) => self.handle_public_message(info, message),
             Message::Private(message, mut recipients) =>
-                self.handle_private_message(user, message, &mut recipients),
-            Message::Command(command) => self.handle_command(user, command),
-            Message::Action(login) => self.handle_action(user, login),
+                self.handle_private_message(info, message, &mut recipients),
+            Message::Command(command) => self.handle_command(&info.user, command),
+            Message::Action(login) => self.handle_action(&info.user, login),
         }
     }
 
-    fn handle_public_message(&self, user: &User, message: &str) {
+    fn handle_public_message(&self, info: &UserInfo, message: &str) {
+        let &UserInfo{ref user, ref mute, ..} = info;
+        if !mute.public_allowed() {
+            user.send_static(mute.get_reason());
+            return;
+        }
         if !message.is_empty() {
             self.broadcast(format!("{} [{}] {}\n",
                                    Local::now().format("%H:%M"),
@@ -107,8 +151,13 @@ impl ChatService {
         }
     }
 
-    fn handle_private_message(&self, user: &User, message: &str, recipients: &mut [&str]) {
+    fn handle_private_message(&self, info: &UserInfo, message: &str, recipients: &mut [&str]) {
+        let &UserInfo{ref user, ref mute, ..} = info;
         // Do validation
+        if !mute.private_allowed() {
+            user.send_static(mute.get_reason());
+            return;
+        }
         if message.is_empty() {
             user.send_static("Can't send an empty private message.\n");
             return;
@@ -152,10 +201,7 @@ impl ChatService {
         match command {
             "help" => user.send_static(HELP_EN),
             "quit" => user.drop(),
-            "list" => {
-                let users: Vec<&str> = self.login_id.keys().map(|s| s.as_str()).collect();
-                user.send(format!("Players online:\n * {}\n", users.join("\n * ")));
-            },
+            "list" => game_event = Some(GameEvent::CommandList(user.get_id())),
             "observe" => game_event = Some(GameEvent::CommandObserve(user.get_id())),
             "play" => game_event = Some(GameEvent::CommandPlay(user.get_id())),
             "pause" => game_event = Some(GameEvent::CommandPause(user.get_id())),
@@ -163,29 +209,38 @@ impl ChatService {
             _ => user.send_static("Unknown command.\n"),
         }
         if let Some(event) = game_event {
-            // TODO
+            self.event_handler.unbounded_send(event).expect("ChatService event_hadler failed");
         }
     }
 
     fn handle_action(&self, user: &User, other: &str) {
-        // TODO
+        let event = GameEvent::Action(user.get_id(), other.into());
+        self.event_handler.unbounded_send(event).expect("ChatService event_hadler failed");
     }
 
     fn handle_drop_user(&mut self, id: UserId) {
-        if let Some(user) = self.users.remove(&id) {
+        if let Some(info) = self.users.remove(&id) {
             self.broadcast(format!("{} Disconnected: {}\n",
                                    Local::now().format("%H:%M"),
-                                   user.get_login()).into());
+                                   info.user.get_login()).into());
+            let event = GameEvent::Disconnected(info.user.get_id());
+            self.event_handler.unbounded_send(event).expect("ChatService event_hadler failed");
+        }
+    }
+
+    fn handle_mute_request(&mut self, id: UserId, level: MuteLevel) {
+        if let Some(mut info) = self.users.get_mut(&id) {
+            info.mute = level;
         }
     }
 
     fn get_user_by_login(&self, login: &str) -> Option<&User> {
-        self.users.get(self.login_id.get(login)?)
+        Some(&self.users.get(self.login_id.get(login)?)?.user)
     }
 
     fn broadcast(&self, message: Arc<str>) {
-        for user in self.users.values() {
-            user.send_arc(message.clone());
+        for info in self.users.values() {
+            info.user.send_arc(message.clone());
         }
     }
 }
@@ -206,10 +261,10 @@ impl<'a> Message<'a> {
                 recipients.push(Message::remove_first_char(word));
             } else {
                 let offset = (word.as_ptr() as usize) - (line.as_ptr() as usize);
-                return Message::Private(&line[offset..], recipients);
+                return Message::Private(&line[offset..], recipients.into());
             }
         }
-        Message::Private("", recipients)
+        Message::Private("", recipients.into())
     }
 
     fn parse_command(line: &'a str) -> Self {
@@ -227,5 +282,66 @@ impl<'a> Message<'a> {
 
     fn first_char(slice: &str) -> char {
         slice.chars().next().expect("No first character")
+    }
+}
+
+impl MuteLevel {
+    pub fn public_allowed(&self) -> bool {
+        if let MuteLevel::AllowAll = self {
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn private_allowed(&self) -> bool {
+        if let MuteLevel::DenyAll(_) = self {
+            false
+        } else {
+            true
+        }
+    }
+
+    pub fn get_reason(&self) -> &'static str {
+        match self {
+            MuteLevel::AllowAll => "",
+            MuteLevel::DenyPublic(reason) => reason,
+            MuteLevel::DenyAll(reason) => reason,
+        }
+    }
+}
+
+impl Player {
+    pub fn get_id(&self) -> PlayerId {
+        self.user.get_id()
+    }
+
+    pub fn get_login(&self) -> &str {
+        self.user.get_login()
+    }
+
+    pub fn send(&self, message: String) {
+        self.user.send(message)
+    }
+
+    pub fn send_boxed(&self, message: Box<str>) {
+        self.user.send_boxed(message)
+    }
+
+    pub fn send_arc(&self, message: Arc<str>) {
+        self.user.send_arc(message)
+    }
+
+    pub fn send_static(&self, message: &'static str) {
+        self.user.send_static(message)
+    }
+
+    pub fn disconnect(&self) {
+        self.user.drop()
+    }
+
+    pub fn mute(&self, level: MuteLevel) {
+        let request = ChatRequest::MutePlayer(self.get_id(), level);
+        self.channel.unbounded_send(request).expect("Player channel failed");
     }
 }
